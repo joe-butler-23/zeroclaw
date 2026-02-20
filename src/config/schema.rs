@@ -3169,6 +3169,57 @@ impl Config {
             anyhow::bail!("scheduler.max_tasks must be greater than 0");
         }
 
+        // Channel support policy: production runtime is Telegram-only.
+        let mut unsupported_channels = Vec::new();
+        if self.channels_config.discord.is_some() {
+            unsupported_channels.push("discord");
+        }
+        if self.channels_config.slack.is_some() {
+            unsupported_channels.push("slack");
+        }
+        if self.channels_config.mattermost.is_some() {
+            unsupported_channels.push("mattermost");
+        }
+        if self.channels_config.webhook.is_some() {
+            unsupported_channels.push("webhook");
+        }
+        if self.channels_config.imessage.is_some() {
+            unsupported_channels.push("imessage");
+        }
+        if self.channels_config.matrix.is_some() {
+            unsupported_channels.push("matrix");
+        }
+        if self.channels_config.signal.is_some() {
+            unsupported_channels.push("signal");
+        }
+        if self.channels_config.whatsapp.is_some() {
+            unsupported_channels.push("whatsapp");
+        }
+        if self.channels_config.linq.is_some() {
+            unsupported_channels.push("linq");
+        }
+        if self.channels_config.email.is_some() {
+            unsupported_channels.push("email");
+        }
+        if self.channels_config.irc.is_some() {
+            unsupported_channels.push("irc");
+        }
+        if self.channels_config.lark.is_some() {
+            unsupported_channels.push("lark");
+        }
+        if self.channels_config.dingtalk.is_some() {
+            unsupported_channels.push("dingtalk");
+        }
+        if self.channels_config.qq.is_some() {
+            unsupported_channels.push("qq");
+        }
+        if !unsupported_channels.is_empty() {
+            anyhow::bail!(
+                "Only Telegram is supported in this runtime. Remove unsupported channels: {}",
+                unsupported_channels.join(", ")
+            );
+        }
+
         // Model routes
         for (i, route) in self.model_routes.iter().enumerate() {
             if route.hint.trim().is_empty() {
@@ -5868,5 +5919,36 @@ default_model = "legacy-model"
             mode & 0o004 != 0,
             "Test setup: file should be world-readable (mode {mode:o})"
         );
+    }
+
+    #[test]
+    async fn validate_rejects_non_telegram_channels() {
+        let mut config = Config::default();
+        config.channels_config.discord = Some(DiscordConfig {
+            bot_token: "discord-token".into(),
+            guild_id: None,
+            allowed_users: vec![],
+            listen_to_bots: false,
+            mention_only: false,
+        });
+
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("Only Telegram is supported"));
+        assert!(err.contains("discord"));
+    }
+
+    #[test]
+    async fn validate_accepts_telegram_only_channels() {
+        let mut config = Config::default();
+        config.channels_config.telegram = Some(TelegramConfig {
+            bot_token: "telegram-token".into(),
+            allowed_users: vec!["*".into()],
+            stream_mode: StreamMode::Off,
+            draft_update_interval_ms: 1000,
+            interrupt_on_new_message: false,
+            mention_only: false,
+        });
+
+        assert!(config.validate().is_ok());
     }
 }

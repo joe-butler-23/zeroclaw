@@ -821,21 +821,15 @@ async fn main() -> Result<()> {
             println!();
             println!("Channels:");
             println!("  CLI:      ✅ always");
-            for (name, configured) in [
-                ("Telegram", config.channels_config.telegram.is_some()),
-                ("Discord", config.channels_config.discord.is_some()),
-                ("Slack", config.channels_config.slack.is_some()),
-                ("Webhook", config.channels_config.webhook.is_some()),
-            ] {
-                println!(
-                    "  {name:9} {}",
-                    if configured {
-                        "✅ configured"
-                    } else {
-                        "❌ not configured"
-                    }
-                );
-            }
+            println!(
+                "  Telegram  {}",
+                if config.channels_config.telegram.is_some() {
+                    "✅ configured"
+                } else {
+                    "❌ not configured"
+                }
+            );
+            println!("  Other     🔒 disabled (Telegram-only runtime)");
             println!();
             println!("Peripherals:");
             println!(

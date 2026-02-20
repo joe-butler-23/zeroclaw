@@ -1938,31 +1938,19 @@ pub async fn handle_command(command: crate::ChannelCommands, config: &Config) ->
         crate::ChannelCommands::List => {
             println!("Channels:");
             println!("  ✅ CLI (always available)");
-            for (name, configured) in [
-                ("Telegram", config.channels_config.telegram.is_some()),
-                ("Discord", config.channels_config.discord.is_some()),
-                ("Slack", config.channels_config.slack.is_some()),
-                ("Mattermost", config.channels_config.mattermost.is_some()),
-                ("Webhook", config.channels_config.webhook.is_some()),
-                ("iMessage", config.channels_config.imessage.is_some()),
-                (
-                    "Matrix",
-                    cfg!(feature = "channel-matrix") && config.channels_config.matrix.is_some(),
-                ),
-                ("Signal", config.channels_config.signal.is_some()),
-                ("WhatsApp", config.channels_config.whatsapp.is_some()),
-                ("Linq", config.channels_config.linq.is_some()),
-                ("Email", config.channels_config.email.is_some()),
-                ("IRC", config.channels_config.irc.is_some()),
-                ("Lark", config.channels_config.lark.is_some()),
-                ("DingTalk", config.channels_config.dingtalk.is_some()),
-                ("QQ", config.channels_config.qq.is_some()),
-            ] {
-                println!("  {} {name}", if configured { "✅" } else { "❌" });
-            }
-            if !cfg!(feature = "channel-matrix") {
+            println!(
+                "  {} Telegram",
+                if config.channels_config.telegram.is_some() {
+                    "✅"
+                } else {
+                    "❌"
+                }
+            );
+            let unsupported = configured_non_telegram_channels(config);
+            if !unsupported.is_empty() {
                 println!(
-                    "  ℹ️ Matrix channel support is disabled in this build (enable `channel-matrix`)."
+                    "  ⚠️  Unsupported configured channels (ignored): {}",
+                    unsupported.join(", ")
                 );
             }
             println!("\nTo start channels: zeroclaw channel start");
@@ -1987,6 +1975,53 @@ pub async fn handle_command(command: crate::ChannelCommands, config: &Config) ->
     }
 }
 
+fn configured_non_telegram_channels(config: &Config) -> Vec<&'static str> {
+    let mut channels = Vec::new();
+    if config.channels_config.discord.is_some() {
+        channels.push("discord");
+    }
+    if config.channels_config.slack.is_some() {
+        channels.push("slack");
+    }
+    if config.channels_config.mattermost.is_some() {
+        channels.push("mattermost");
+    }
+    if config.channels_config.webhook.is_some() {
+        channels.push("webhook");
+    }
+    if config.channels_config.imessage.is_some() {
+        channels.push("imessage");
+    }
+    if config.channels_config.matrix.is_some() {
+        channels.push("matrix");
+    }
+    if config.channels_config.signal.is_some() {
+        channels.push("signal");
+    }
+    if config.channels_config.whatsapp.is_some() {
+        channels.push("whatsapp");
+    }
+    if config.channels_config.linq.is_some() {
+        channels.push("linq");
+    }
+    if config.channels_config.email.is_some() {
+        channels.push("email");
+    }
+    if config.channels_config.irc.is_some() {
+        channels.push("irc");
+    }
+    if config.channels_config.lark.is_some() {
+        channels.push("lark");
+    }
+    if config.channels_config.dingtalk.is_some() {
+        channels.push("dingtalk");
+    }
+    if config.channels_config.qq.is_some() {
+        channels.push("qq");
+    }
+    channels
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChannelHealthState {
     Healthy,
@@ -2006,6 +2041,14 @@ fn classify_health_result(
 
 /// Run health checks for configured channels.
 pub async fn doctor_channels(config: Config) -> Result<()> {
+    let unsupported = configured_non_telegram_channels(&config);
+    if !unsupported.is_empty() {
+        anyhow::bail!(
+            "Only Telegram is supported in this runtime. Remove unsupported channels: {}",
+            unsupported.join(", ")
+        );
+    }
+
     let mut channels: Vec<(&'static str, Arc<dyn Channel>)> = Vec::new();
 
     if let Some(ref tg) = config.channels_config.telegram {
@@ -2243,6 +2286,14 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 /// Start all configured channels and route messages to the agent
 #[allow(clippy::too_many_lines)]
 pub async fn start_channels(config: Config) -> Result<()> {
+    let unsupported = configured_non_telegram_channels(&config);
+    if !unsupported.is_empty() {
+        anyhow::bail!(
+            "Only Telegram is supported in this runtime. Remove unsupported channels: {}",
+            unsupported.join(", ")
+        );
+    }
+
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = providers::ProviderRuntimeOptions {
         auth_profile_override: None,
