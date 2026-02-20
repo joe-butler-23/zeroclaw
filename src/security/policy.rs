@@ -449,6 +449,14 @@ impl SecurityPolicy {
                 return CommandRiskLevel::High;
             }
 
+            if base == "find"
+                && args
+                    .iter()
+                    .any(|arg| arg == "-delete" || arg.contains("-delete"))
+            {
+                return CommandRiskLevel::High;
+            }
+
             // Medium-risk commands (state-changing, but not inherently destructive)
             let medium = match base.as_str() {
                 "git" => args.first().is_some_and(|verb| {
@@ -632,10 +640,13 @@ impl SecurityPolicy {
     /// Check for dangerous arguments that allow sub-command execution.
     fn is_args_safe(&self, base: &str, args: &[String]) -> bool {
         let base = base.to_ascii_lowercase();
-        match base.as_str() {
+        let command_args_safe = match base.as_str() {
             "find" => {
                 // find -exec and find -ok allow arbitrary command execution
-                !args.iter().any(|arg| arg == "-exec" || arg == "-ok")
+                // find -delete can be destructive and bypasses explicit rm checks.
+                !args
+                    .iter()
+                    .any(|arg| arg == "-exec" || arg == "-ok" || arg == "-delete")
             }
             "git" => {
                 // git config, alias, and -c can be used to set dangerous options
@@ -649,7 +660,51 @@ impl SecurityPolicy {
                 })
             }
             _ => true,
+        };
+
+        if !command_args_safe {
+            return false;
         }
+
+        // Enforce path safety on path-like command arguments so workspace-only
+        // mode cannot read or mutate absolute paths outside the workspace.
+        args.iter().all(|arg| self.is_cli_argument_path_safe(arg))
+    }
+
+    fn is_cli_argument_path_safe(&self, arg: &str) -> bool {
+        let candidate = if arg.starts_with('-') {
+            if let Some((_, value)) = arg.split_once('=') {
+                value
+            } else {
+                return true;
+            }
+        } else {
+            arg
+        };
+
+        if candidate.is_empty() {
+            return true;
+        }
+
+        // Ignore obvious non-path values.
+        if candidate.starts_with("http://")
+            || candidate.starts_with("https://")
+            || candidate.starts_with("ssh://")
+            || candidate.contains(':')
+            || candidate == "."
+            || candidate == "./"
+        {
+            return true;
+        }
+
+        if candidate.starts_with('/') || candidate.starts_with("~/") {
+            return self.is_path_allowed(candidate);
+        }
+
+        // Also block relative path traversal in command args.
+        !Path::new(candidate)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
     }
 
     // ── Path Validation ────────────────────────────────────────────────
@@ -1341,6 +1396,7 @@ mod tests {
         // find -exec is a common bypass
         assert!(!p.is_command_allowed("find . -exec rm -rf {} +"));
         assert!(!p.is_command_allowed("find / -ok cat {} \\;"));
+        assert!(!p.is_command_allowed("find . -delete"));
         // git config/alias can execute commands
         assert!(!p.is_command_allowed("git config core.editor \"rm -rf /\""));
         assert!(!p.is_command_allowed("git alias.st status"));
@@ -1363,6 +1419,28 @@ mod tests {
         assert!(!p.is_command_allowed("echo secret | tee /etc/crontab"));
         assert!(!p.is_command_allowed("ls | /usr/bin/tee outfile"));
         assert!(!p.is_command_allowed("tee file.txt"));
+    }
+
+    #[test]
+    fn absolute_path_args_blocked_when_workspace_only_enabled() {
+        let p = default_policy();
+        assert!(!p.is_command_allowed("cat /etc/passwd"));
+        assert!(!p.is_command_allowed("ls /tmp"));
+        assert!(!p.is_command_allowed("find / -name '*.txt'"));
+    }
+
+    #[test]
+    fn find_delete_is_always_high_risk() {
+        let p = SecurityPolicy {
+            workspace_only: false,
+            allowed_commands: vec!["find".into()],
+            ..SecurityPolicy::default()
+        };
+
+        assert_eq!(
+            p.command_risk_level("find /tmp -delete"),
+            CommandRiskLevel::High
+        );
     }
 
     #[test]
