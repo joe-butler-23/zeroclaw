@@ -663,7 +663,9 @@ fn check_daemon_state(config: &Config, items: &mut Vec<DiagItem>) {
                     Utc::now().signed_duration_since(dt).num_seconds()
                 });
 
-            if scheduler_ok && scheduler_age <= SCHEDULER_STALE_SECONDS {
+            if !config.cron.enabled && scheduler_ok {
+                items.push(DiagItem::ok(cat, "scheduler disabled (cron.enabled=false)"));
+            } else if scheduler_ok && scheduler_age <= SCHEDULER_STALE_SECONDS {
                 items.push(DiagItem::ok(
                     cat,
                     format!("scheduler healthy (last ok {scheduler_age}s ago)"),
@@ -813,6 +815,14 @@ fn parse_rfc3339(raw: &str) -> Option<DateTime<Utc>> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn write_daemon_state(config: &Config, payload: serde_json::Value) {
+        let path = crate::daemon::state_file_path(config);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
+    }
 
     #[test]
     fn provider_validation_checks_custom_url_shape() {
@@ -1098,5 +1108,43 @@ mod tests {
         assert_eq!(agent_messages.len(), 2);
         assert!(agent_messages[0].contains("agent \"alpha\""));
         assert!(agent_messages[1].contains("agent \"zeta\""));
+    }
+
+    #[test]
+    fn daemon_check_treats_disabled_scheduler_as_ok_when_stale() {
+        let tmp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.config_path = tmp.path().join("config.toml");
+        config.cron.enabled = false;
+
+        let now = Utc::now();
+        let stale = now - chrono::Duration::seconds(SCHEDULER_STALE_SECONDS + 60);
+        write_daemon_state(
+            &config,
+            serde_json::json!({
+                "updated_at": now.to_rfc3339(),
+                "components": {
+                    "scheduler": {
+                        "status": "ok",
+                        "updated_at": stale.to_rfc3339(),
+                        "last_ok": stale.to_rfc3339(),
+                        "last_error": null,
+                        "restart_count": 0
+                    }
+                }
+            }),
+        );
+
+        let mut items = Vec::new();
+        check_daemon_state(&config, &mut items);
+
+        let scheduler_item = items
+            .iter()
+            .find(|item| item.message.contains("scheduler disabled"));
+        assert!(scheduler_item.is_some());
+        assert_eq!(scheduler_item.unwrap().severity, Severity::Ok);
+        assert!(!items
+            .iter()
+            .any(|item| item.message.contains("scheduler unhealthy")));
     }
 }

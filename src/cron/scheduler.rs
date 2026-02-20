@@ -30,6 +30,8 @@ pub async fn run(config: Config) -> Result<()> {
 
     loop {
         interval.tick().await;
+        // Report liveness even when there are no due jobs.
+        crate::health::mark_component_ok("scheduler");
 
         let jobs = match due_jobs(&config, Utc::now()) {
             Ok(jobs) => jobs,
@@ -687,7 +689,7 @@ mod tests {
     #[tokio::test]
     async fn run_agent_job_blocks_readonly_mode() {
         let tmp = TempDir::new().unwrap();
-        let mut config = test_config(&tmp);
+        let mut config = test_config(&tmp).await;
         config.autonomy.level = crate::security::AutonomyLevel::ReadOnly;
         let mut job = test_job("");
         job.job_type = JobType::Agent;
@@ -703,7 +705,7 @@ mod tests {
     #[tokio::test]
     async fn run_agent_job_blocks_rate_limited() {
         let tmp = TempDir::new().unwrap();
-        let mut config = test_config(&tmp);
+        let mut config = test_config(&tmp).await;
         config.autonomy.max_actions_per_hour = 0;
         let mut job = test_job("");
         job.job_type = JobType::Agent;
