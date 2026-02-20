@@ -24,7 +24,7 @@ pub fn flash_nucleo_firmware() -> Result<()> {
     if !probe_rs_available() {
         anyhow::bail!(
             "probe-rs not found. Install it:\n  cargo install probe-rs-tools --locked\n\n\
-             Or: curl -LsSf https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh | sh\n\n\
+             Or download installer, review, then run:\n  curl -LsSf -o probe-rs-tools-installer.sh https://github.com/probe-rs/probe-rs/releases/latest/download/probe-rs-tools-installer.sh\n  sh ./probe-rs-tools-installer.sh\n\n\
              Connect Nucleo via USB (ST-Link). Then run this command again."
         );
     }

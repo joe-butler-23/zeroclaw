@@ -66,23 +66,25 @@ Notes:
 - `--prebuilt-only` disables source fallback.
 - `--force-source-build` disables pre-built flow entirely.
 
-## Option B: Remote one-liner
+## Option B: Fast local clone
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zeroclaw-labs/zeroclaw/main/scripts/bootstrap.sh | bash
+git clone https://github.com/zeroclaw-labs/zeroclaw.git
+cd zeroclaw
+./zeroclaw_install.sh
 ```
 
-For high-security environments, prefer Option A so you can review the script before execution.
+This keeps execution local so you can inspect scripts before running them.
 
 Legacy compatibility:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zeroclaw-labs/zeroclaw/main/scripts/install.sh | bash
+./scripts/install.sh
 ```
 
-This legacy endpoint prefers forwarding to `scripts/bootstrap.sh` and falls back to legacy source install if unavailable in that revision.
+`scripts/install.sh` is a compatibility entrypoint and forwards to local `zeroclaw_install.sh` / `scripts/bootstrap.sh`.
 
-If you run Option B outside a repository checkout, the bootstrap script automatically clones a temporary workspace, builds, installs, and then cleans it up.
+Remote clone-and-exec fallback is disabled by default for security. If needed, opt in explicitly with `ZEROCLAW_ALLOW_REMOTE_CLONE=1` and set `ZEROCLAW_BOOTSTRAP_GIT_REF` to an immutable tag/commit.
 
 ## Optional onboarding modes
 

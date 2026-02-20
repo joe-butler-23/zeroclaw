@@ -45,8 +45,11 @@ pub fn ensure_arduino_cli() -> Result<()> {
 
     #[cfg(target_os = "linux")]
     {
-        println!("arduino-cli not found. Run the install script:");
-        println!("  curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh");
+        println!("arduino-cli not found. Download installer, review, then run:");
+        println!(
+            "  curl -fsSL -o arduino-cli-install.sh https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh"
+        );
+        println!("  sh ./arduino-cli-install.sh");
         println!();
         println!("Or install via package manager (e.g. apt install arduino-cli on Debian/Ubuntu).");
         anyhow::bail!("arduino-cli not installed. Install it and try again.");

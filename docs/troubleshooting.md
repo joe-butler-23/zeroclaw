@@ -209,16 +209,18 @@ Linux logs:
 journalctl --user -u zeroclaw.service -f
 ```
 
-## Legacy Installer Compatibility
+## Installer Compatibility
 
-Both still work:
+Use local scripts from a repository checkout:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zeroclaw-labs/zeroclaw/main/scripts/bootstrap.sh | bash
-curl -fsSL https://raw.githubusercontent.com/zeroclaw-labs/zeroclaw/main/scripts/install.sh | bash
+git clone https://github.com/zeroclaw-labs/zeroclaw.git
+cd zeroclaw
+./zeroclaw_install.sh
 ```
 
-`install.sh` is a compatibility entry and forwards/falls back to bootstrap behavior.
+`scripts/install.sh` remains a local compatibility entrypoint and forwards to `zeroclaw_install.sh` / `scripts/bootstrap.sh`.
+Remote clone-and-exec fallback is disabled by default; if you need it for a one-off run, set `ZEROCLAW_ALLOW_REMOTE_CLONE=1` and `ZEROCLAW_BOOTSTRAP_GIT_REF` explicitly.
 
 ## Still Stuck?
 

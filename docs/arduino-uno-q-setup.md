@@ -57,8 +57,9 @@ ssh arduino@<UNO_Q_IP>
 # SSH into Uno Q
 ssh arduino@<UNO_Q_IP>
 
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# Install Rust (download, review, then run installer)
+curl --proto '=https' --tlsv1.2 -sSf -o rustup-init.sh https://sh.rustup.rs
+sh ./rustup-init.sh -y
 source ~/.cargo/env
 
 # Install build deps (Debian)
@@ -197,7 +198,7 @@ Now when you message your Telegram bot *"Turn on the LED"* or *"Set pin 13 high"
 |------|---------|
 | 1 | Configure Uno Q in App Lab (WiFi, SSH) |
 | 2 | `ssh arduino@<IP>` |
-| 3 | `curl -sSf https://sh.rustup.rs \| sh -s -- -y && source ~/.cargo/env` |
+| 3 | `curl -sSf -o rustup-init.sh https://sh.rustup.rs && sh ./rustup-init.sh -y && source ~/.cargo/env` |
 | 4 | `sudo apt-get install -y pkg-config libssl-dev` |
 | 5 | `git clone https://github.com/theonlyhennygod/zeroclaw.git && cd zeroclaw` |
 | 6 | `cargo build --release --no-default-features` |
