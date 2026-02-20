@@ -7,6 +7,8 @@ updates:
       interval: daily
     target-branch: main
     open-pull-requests-limit: 3
+    allow:
+      - dependency-type: "direct"
     labels:
       - "dependencies"
     groups:
@@ -23,6 +25,27 @@ updates:
       interval: daily
     target-branch: main
     open-pull-requests-limit: 1
+    allow:
+      - dependency-name: "actions/checkout"
+      - dependency-name: "actions/download-artifact"
+      - dependency-name: "actions/first-interaction"
+      - dependency-name: "actions/github-script"
+      - dependency-name: "actions/labeler"
+      - dependency-name: "actions/stale"
+      - dependency-name: "actions/upload-artifact"
+      - dependency-name: "docker/login-action"
+      - dependency-name: "docker/metadata-action"
+      - dependency-name: "dtolnay/rust-toolchain"
+      - dependency-name: "EmbarkStudios/cargo-deny-action"
+      - dependency-name: "github/codeql-action"
+      - dependency-name: "lycheeverse/lychee-action"
+      - dependency-name: "rhysd/actionlint"
+      - dependency-name: "rustsec/audit-check"
+      - dependency-name: "sigstore/cosign-installer"
+      - dependency-name: "softprops/action-gh-release"
+      - dependency-name: "useblacksmith/build-push-action"
+      - dependency-name: "useblacksmith/rust-cache"
+      - dependency-name: "useblacksmith/setup-docker-builder"
     labels:
       - "ci"
       - "dependencies"

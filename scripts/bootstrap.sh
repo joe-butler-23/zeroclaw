@@ -57,8 +57,10 @@ Examples:
   # Compatibility entrypoint:
   ./bootstrap.sh --docker
 
-  # Remote one-liner
-  curl -fsSL https://raw.githubusercontent.com/zeroclaw-labs/zeroclaw/main/scripts/bootstrap.sh | bash
+  # Recommended: local checkout
+  git clone https://github.com/zeroclaw-labs/zeroclaw.git
+  cd zeroclaw
+  ./zeroclaw_install.sh
 
 Environment:
   ZEROCLAW_DOCKER_DATA_DIR   Host path for Docker config/workspace persistence
@@ -68,6 +70,9 @@ Environment:
   ZEROCLAW_MODEL             Used when --model is not provided
   ZEROCLAW_BOOTSTRAP_MIN_RAM_MB   Minimum RAM threshold for source build preflight (default: 2048)
   ZEROCLAW_BOOTSTRAP_MIN_DISK_MB  Minimum free disk threshold for source build preflight (default: 6144)
+  ZEROCLAW_ALLOW_REMOTE_CLONE     Set to 1 to allow temporary remote clone-and-run fallback
+  ZEROCLAW_BOOTSTRAP_GIT_REF      Git ref (tag/branch/sha) used when ZEROCLAW_ALLOW_REMOTE_CLONE=1
+  ZEROCLAW_RUSTUP_INIT_SHA256     Optional SHA256 checksum expected for downloaded rustup installer
   ZEROCLAW_DISABLE_ALPINE_AUTO_DEPS
                             Set to 1 to disable Alpine auto-install of missing prerequisites
 USAGE
@@ -75,6 +80,17 @@ USAGE
 
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+sha256_file() {
+  local path="$1"
+  if have_cmd sha256sum; then
+    sha256sum "$path" | awk '{print $1}'
+  elif have_cmd shasum; then
+    shasum -a 256 "$path" | awk '{print $1}'
+  else
+    return 1
+  fi
 }
 
 get_total_memory_mb() {
@@ -406,6 +422,8 @@ MSG
 }
 
 install_rust_toolchain() {
+  local rustup_url rustup_tmp expected_sha actual_sha
+
   if have_cmd cargo && have_cmd rustc; then
     info "Rust already installed: $(rustc --version)"
     return
@@ -417,7 +435,35 @@ install_rust_toolchain() {
   fi
 
   info "Installing Rust via rustup"
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  rustup_url="https://sh.rustup.rs"
+  rustup_tmp="$(mktemp -t rustup-init.XXXXXX.sh)"
+
+  if ! curl --proto '=https' --tlsv1.2 -fsSLo "$rustup_tmp" "$rustup_url"; then
+    rm -f "$rustup_tmp"
+    error "Failed to download rustup installer."
+    exit 1
+  fi
+
+  expected_sha="${ZEROCLAW_RUSTUP_INIT_SHA256:-}"
+  if [[ -n "$expected_sha" ]]; then
+    if ! actual_sha="$(sha256_file "$rustup_tmp")"; then
+      rm -f "$rustup_tmp"
+      error "Could not compute SHA256 checksum for rustup installer (sha256sum/shasum missing)."
+      exit 1
+    fi
+    if [[ "${actual_sha,,}" != "${expected_sha,,}" ]]; then
+      rm -f "$rustup_tmp"
+      error "Rustup installer checksum mismatch."
+      error "Expected: $expected_sha"
+      error "Actual:   $actual_sha"
+      exit 1
+    fi
+  else
+    warn "ZEROCLAW_RUSTUP_INIT_SHA256 not set; skipping rustup installer checksum verification."
+  fi
+
+  sh "$rustup_tmp" -y
+  rm -f "$rustup_tmp"
 
   if [[ -f "$HOME/.cargo/env" ]]; then
     # shellcheck disable=SC1090
@@ -797,7 +843,7 @@ trap cleanup EXIT
 # Support three launch modes:
 # 1) ./bootstrap.sh from repo root
 # 2) scripts/bootstrap.sh from repo
-# 3) curl | bash (no local repo => temporary clone)
+# 3) explicit remote-clone fallback (disabled by default)
 if [[ ! -f "$WORK_DIR/Cargo.toml" ]]; then
   if [[ -f "$(pwd)/Cargo.toml" ]]; then
     WORK_DIR="$(pwd)"
@@ -810,9 +856,39 @@ if [[ ! -f "$WORK_DIR/Cargo.toml" ]]; then
       exit 1
     fi
 
+    if [[ "${ZEROCLAW_ALLOW_REMOTE_CLONE:-0}" != "1" ]]; then
+      error "No local repository checkout detected."
+      error "Refusing automatic remote clone-and-exec by default."
+      cat <<'MSG' >&2
+Clone locally and run bootstrap from the repository root:
+  git clone https://github.com/zeroclaw-labs/zeroclaw.git
+  cd zeroclaw
+  ./zeroclaw_install.sh
+
+If you still need temporary remote-clone fallback for this run, set:
+  ZEROCLAW_ALLOW_REMOTE_CLONE=1
+  ZEROCLAW_BOOTSTRAP_GIT_REF=<tag-or-commit>
+MSG
+      exit 1
+    fi
+
+    BOOTSTRAP_GIT_REF="${ZEROCLAW_BOOTSTRAP_GIT_REF:-main}"
+    if [[ "$BOOTSTRAP_GIT_REF" == "main" ]]; then
+      warn "Using unpinned ZEROCLAW_BOOTSTRAP_GIT_REF=main."
+      warn "Prefer an immutable tag or commit SHA for remote clone mode."
+    fi
+
     TEMP_DIR="$(mktemp -d -t zeroclaw-bootstrap-XXXXXX)"
-    info "No local repository detected; cloning latest main branch"
+    info "No local repository detected; cloning ref: $BOOTSTRAP_GIT_REF"
     git clone --depth 1 "$REPO_URL" "$TEMP_DIR"
+    if ! git -C "$TEMP_DIR" fetch --depth 1 origin "$BOOTSTRAP_GIT_REF"; then
+      error "Failed to fetch ZEROCLAW_BOOTSTRAP_GIT_REF=$BOOTSTRAP_GIT_REF"
+      exit 1
+    fi
+    if ! git -C "$TEMP_DIR" checkout --detach FETCH_HEAD >/dev/null 2>&1; then
+      error "Failed to checkout fetched ref: $BOOTSTRAP_GIT_REF"
+      exit 1
+    fi
     WORK_DIR="$TEMP_DIR"
     TEMP_CLONE=true
   fi
