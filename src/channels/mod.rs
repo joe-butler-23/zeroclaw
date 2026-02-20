@@ -101,6 +101,10 @@ const CHANNEL_PARALLELISM_PER_CHANNEL: usize = 4;
 const CHANNEL_MIN_IN_FLIGHT_MESSAGES: usize = 8;
 const CHANNEL_MAX_IN_FLIGHT_MESSAGES: usize = 64;
 const CHANNEL_TYPING_REFRESH_INTERVAL_SECS: u64 = 4;
+#[cfg(not(test))]
+const CHANNEL_HEALTH_PULSE_SECS: u64 = 60;
+#[cfg(test)]
+const CHANNEL_HEALTH_PULSE_SECS: u64 = 1;
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const MODEL_CACHE_PREVIEW_LIMIT: usize = 10;
 const MEMORY_CONTEXT_MAX_ENTRIES: usize = 4;
@@ -1005,7 +1009,20 @@ fn spawn_supervised_listener(
 
         loop {
             crate::health::mark_component_ok(&component);
-            let result = ch.listen(tx.clone()).await;
+            let mut health_pulse =
+                tokio::time::interval(Duration::from_secs(CHANNEL_HEALTH_PULSE_SECS));
+            health_pulse.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+            let listen_fut = ch.listen(tx.clone());
+            tokio::pin!(listen_fut);
+            let result = loop {
+                tokio::select! {
+                    res = &mut listen_fut => break res,
+                    _ = health_pulse.tick() => {
+                        crate::health::mark_component_ok(&component);
+                    }
+                }
+            };
 
             if tx.is_closed() {
                 break;
@@ -5093,5 +5110,66 @@ Mon Feb 20
             .unwrap_or("")
             .contains("listen boom"));
         assert!(calls.load(Ordering::SeqCst) >= 1);
+    }
+
+    struct HangingChannel {
+        name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Channel for HangingChannel {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        async fn send(&self, _message: &SendMessage) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn listen(
+            &self,
+            _tx: tokio::sync::mpsc::Sender<traits::ChannelMessage>,
+        ) -> anyhow::Result<()> {
+            std::future::pending::<anyhow::Result<()>>().await
+        }
+    }
+
+    #[tokio::test]
+    async fn supervised_listener_emits_periodic_health_pulses_while_idle() {
+        let channel: Arc<dyn Channel> = Arc::new(HangingChannel {
+            name: "test-supervised-pulse",
+        });
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(1);
+        let handle = spawn_supervised_listener(channel, tx, 1, 1);
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let first_snapshot = crate::health::snapshot_json();
+        let first_updated_at = first_snapshot["components"]["channel:test-supervised-pulse"]
+            ["updated_at"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            !first_updated_at.is_empty(),
+            "channel component should be registered"
+        );
+
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        let second_snapshot = crate::health::snapshot_json();
+        let second_updated_at = second_snapshot["components"]["channel:test-supervised-pulse"]
+            ["updated_at"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+
+        drop(rx);
+        handle.abort();
+        let _ = handle.await;
+
+        assert_ne!(
+            first_updated_at, second_updated_at,
+            "listener should refresh channel health while listen() is idle"
+        );
     }
 }
