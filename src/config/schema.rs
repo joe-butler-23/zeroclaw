@@ -628,7 +628,7 @@ impl Default for PeripheralBoardConfig {
 /// Controls the HTTP gateway for webhook and pairing endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GatewayConfig {
-    /// Gateway port (default: 3000)
+    /// Gateway port (default: 3001)
     #[serde(default = "default_gateway_port")]
     pub port: u16,
     /// Gateway host (default: 127.0.0.1)
@@ -671,7 +671,7 @@ pub struct GatewayConfig {
 }
 
 fn default_gateway_port() -> u16 {
-    3000
+    3001
 }
 
 fn default_gateway_host() -> String {
@@ -6115,7 +6115,7 @@ default_model = "legacy-model"
     async fn env_override_gateway_port() {
         let _env_guard = env_override_lock().await;
         let mut config = Config::default();
-        assert_eq!(config.gateway.port, 3000);
+        assert_eq!(config.gateway.port, 3001);
 
         std::env::set_var("ZEROCLAW_GATEWAY_PORT", "8080");
         config.apply_env_overrides();
@@ -6437,7 +6437,7 @@ default_model = "legacy-model"
     #[test]
     async fn gateway_config_default_values() {
         let g = GatewayConfig::default();
-        assert_eq!(g.port, 3000);
+        assert_eq!(g.port, 3001);
         assert_eq!(g.host, "127.0.0.1");
         assert!(g.require_pairing);
         assert!(!g.allow_public_bind);
