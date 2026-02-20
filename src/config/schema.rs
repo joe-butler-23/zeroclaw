@@ -3022,6 +3022,30 @@ fn decrypt_optional_secret(
     Ok(())
 }
 
+fn decrypt_required_secret(
+    store: &crate::security::SecretStore,
+    value: &mut String,
+    field_name: &str,
+) -> Result<()> {
+    if crate::security::SecretStore::is_encrypted(value) {
+        *value = store
+            .decrypt(value)
+            .with_context(|| format!("Failed to decrypt {field_name}"))?;
+    }
+    Ok(())
+}
+
+fn decrypt_secret_list(
+    store: &crate::security::SecretStore,
+    values: &mut Vec<String>,
+    field_name: &str,
+) -> Result<()> {
+    for value in values {
+        decrypt_required_secret(store, value, field_name)?;
+    }
+    Ok(())
+}
+
 fn encrypt_optional_secret(
     store: &crate::security::SecretStore,
     value: &mut Option<String>,
@@ -3036,6 +3060,68 @@ fn encrypt_optional_secret(
             );
         }
     }
+    Ok(())
+}
+
+fn encrypt_required_secret(
+    store: &crate::security::SecretStore,
+    value: &mut String,
+    field_name: &str,
+) -> Result<()> {
+    if !crate::security::SecretStore::is_encrypted(value) {
+        *value = store
+            .encrypt(value)
+            .with_context(|| format!("Failed to encrypt {field_name}"))?;
+    }
+    Ok(())
+}
+
+fn encrypt_secret_list(
+    store: &crate::security::SecretStore,
+    values: &mut Vec<String>,
+    field_name: &str,
+) -> Result<()> {
+    for value in values {
+        encrypt_required_secret(store, value, field_name)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn set_owner_only_file_permissions(path: &Path) -> Result<()> {
+    use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+
+    fs::set_permissions(path, Permissions::from_mode(0o600))
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to set owner-only file permissions: {}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(not(unix))]
+async fn set_owner_only_file_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn set_owner_only_dir_permissions(path: &Path) -> Result<()> {
+    use std::{fs::Permissions, os::unix::fs::PermissionsExt};
+
+    fs::set_permissions(path, Permissions::from_mode(0o700))
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to set owner-only directory permissions: {}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(not(unix))]
+async fn set_owner_only_dir_permissions(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -3054,21 +3140,22 @@ impl Config {
         fs::create_dir_all(&workspace_dir)
             .await
             .context("Failed to create workspace directory")?;
+        set_owner_only_dir_permissions(&zeroclaw_dir).await?;
+        set_owner_only_dir_permissions(&workspace_dir).await?;
 
         if config_path.exists() {
-            // Warn if config file is world-readable (may contain API keys)
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 if let Ok(meta) = fs::metadata(&config_path).await {
-                    if meta.permissions().mode() & 0o004 != 0 {
+                    let mode = meta.permissions().mode() & 0o777;
+                    if mode != 0o600 {
                         tracing::warn!(
-                            "Config file {:?} is world-readable (mode {:o}). \
-                             Consider restricting with: chmod 600 {:?}",
-                            config_path,
-                            meta.permissions().mode() & 0o777,
-                            config_path,
+                            "Config file {} has mode {:o}; restricting to 0600.",
+                            config_path.display(),
+                            mode
                         );
+                        set_owner_only_file_permissions(&config_path).await?;
                     }
                 }
             }
@@ -3106,6 +3193,161 @@ impl Config {
                 &mut config.storage.provider.config.db_url,
                 "config.storage.provider.config.db_url",
             )?;
+            decrypt_secret_list(
+                &store,
+                &mut config.gateway.paired_tokens,
+                "config.gateway.paired_tokens[*]",
+            )?;
+            if let Some(cloudflare) = config.tunnel.cloudflare.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut cloudflare.token,
+                    "config.tunnel.cloudflare.token",
+                )?;
+            }
+            if let Some(ngrok) = config.tunnel.ngrok.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut ngrok.auth_token,
+                    "config.tunnel.ngrok.auth_token",
+                )?;
+            }
+            if let Some(telegram) = config.channels_config.telegram.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut telegram.bot_token,
+                    "config.channels_config.telegram.bot_token",
+                )?;
+            }
+            if let Some(discord) = config.channels_config.discord.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut discord.bot_token,
+                    "config.channels_config.discord.bot_token",
+                )?;
+            }
+            if let Some(slack) = config.channels_config.slack.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut slack.bot_token,
+                    "config.channels_config.slack.bot_token",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut slack.app_token,
+                    "config.channels_config.slack.app_token",
+                )?;
+            }
+            if let Some(mattermost) = config.channels_config.mattermost.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut mattermost.bot_token,
+                    "config.channels_config.mattermost.bot_token",
+                )?;
+            }
+            if let Some(webhook) = config.channels_config.webhook.as_mut() {
+                decrypt_optional_secret(
+                    &store,
+                    &mut webhook.secret,
+                    "config.channels_config.webhook.secret",
+                )?;
+            }
+            if let Some(matrix) = config.channels_config.matrix.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut matrix.access_token,
+                    "config.channels_config.matrix.access_token",
+                )?;
+            }
+            if let Some(whatsapp) = config.channels_config.whatsapp.as_mut() {
+                decrypt_optional_secret(
+                    &store,
+                    &mut whatsapp.access_token,
+                    "config.channels_config.whatsapp.access_token",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut whatsapp.verify_token,
+                    "config.channels_config.whatsapp.verify_token",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut whatsapp.app_secret,
+                    "config.channels_config.whatsapp.app_secret",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut whatsapp.pair_code,
+                    "config.channels_config.whatsapp.pair_code",
+                )?;
+            }
+            if let Some(linq) = config.channels_config.linq.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut linq.api_token,
+                    "config.channels_config.linq.api_token",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut linq.signing_secret,
+                    "config.channels_config.linq.signing_secret",
+                )?;
+            }
+            if let Some(email) = config.channels_config.email.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut email.password,
+                    "config.channels_config.email.password",
+                )?;
+            }
+            if let Some(irc) = config.channels_config.irc.as_mut() {
+                decrypt_optional_secret(
+                    &store,
+                    &mut irc.server_password,
+                    "config.channels_config.irc.server_password",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut irc.nickserv_password,
+                    "config.channels_config.irc.nickserv_password",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut irc.sasl_password,
+                    "config.channels_config.irc.sasl_password",
+                )?;
+            }
+            if let Some(lark) = config.channels_config.lark.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut lark.app_secret,
+                    "config.channels_config.lark.app_secret",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut lark.encrypt_key,
+                    "config.channels_config.lark.encrypt_key",
+                )?;
+                decrypt_optional_secret(
+                    &store,
+                    &mut lark.verification_token,
+                    "config.channels_config.lark.verification_token",
+                )?;
+            }
+            if let Some(dingtalk) = config.channels_config.dingtalk.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut dingtalk.client_secret,
+                    "config.channels_config.dingtalk.client_secret",
+                )?;
+            }
+            if let Some(qq) = config.channels_config.qq.as_mut() {
+                decrypt_required_secret(
+                    &store,
+                    &mut qq.app_secret,
+                    "config.channels_config.qq.app_secret",
+                )?;
+            }
 
             for agent in config.agents.values_mut() {
                 decrypt_optional_secret(&store, &mut agent.api_key, "config.agents.*.api_key")?;
@@ -3125,13 +3367,7 @@ impl Config {
             config.config_path = config_path.clone();
             config.workspace_dir = workspace_dir;
             config.save().await?;
-
-            // Restrict permissions on newly created config file (may contain API keys)
-            #[cfg(unix)]
-            {
-                use std::{fs::Permissions, os::unix::fs::PermissionsExt};
-                let _ = fs::set_permissions(&config_path, Permissions::from_mode(0o600)).await;
-            }
+            set_owner_only_file_permissions(&config_path).await?;
 
             config.apply_env_overrides();
             config.validate()?;
@@ -3553,6 +3789,161 @@ impl Config {
             &mut config_to_save.storage.provider.config.db_url,
             "config.storage.provider.config.db_url",
         )?;
+        encrypt_secret_list(
+            &store,
+            &mut config_to_save.gateway.paired_tokens,
+            "config.gateway.paired_tokens[*]",
+        )?;
+        if let Some(cloudflare) = config_to_save.tunnel.cloudflare.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut cloudflare.token,
+                "config.tunnel.cloudflare.token",
+            )?;
+        }
+        if let Some(ngrok) = config_to_save.tunnel.ngrok.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut ngrok.auth_token,
+                "config.tunnel.ngrok.auth_token",
+            )?;
+        }
+        if let Some(telegram) = config_to_save.channels_config.telegram.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut telegram.bot_token,
+                "config.channels_config.telegram.bot_token",
+            )?;
+        }
+        if let Some(discord) = config_to_save.channels_config.discord.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut discord.bot_token,
+                "config.channels_config.discord.bot_token",
+            )?;
+        }
+        if let Some(slack) = config_to_save.channels_config.slack.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut slack.bot_token,
+                "config.channels_config.slack.bot_token",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut slack.app_token,
+                "config.channels_config.slack.app_token",
+            )?;
+        }
+        if let Some(mattermost) = config_to_save.channels_config.mattermost.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut mattermost.bot_token,
+                "config.channels_config.mattermost.bot_token",
+            )?;
+        }
+        if let Some(webhook) = config_to_save.channels_config.webhook.as_mut() {
+            encrypt_optional_secret(
+                &store,
+                &mut webhook.secret,
+                "config.channels_config.webhook.secret",
+            )?;
+        }
+        if let Some(matrix) = config_to_save.channels_config.matrix.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut matrix.access_token,
+                "config.channels_config.matrix.access_token",
+            )?;
+        }
+        if let Some(whatsapp) = config_to_save.channels_config.whatsapp.as_mut() {
+            encrypt_optional_secret(
+                &store,
+                &mut whatsapp.access_token,
+                "config.channels_config.whatsapp.access_token",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut whatsapp.verify_token,
+                "config.channels_config.whatsapp.verify_token",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut whatsapp.app_secret,
+                "config.channels_config.whatsapp.app_secret",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut whatsapp.pair_code,
+                "config.channels_config.whatsapp.pair_code",
+            )?;
+        }
+        if let Some(linq) = config_to_save.channels_config.linq.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut linq.api_token,
+                "config.channels_config.linq.api_token",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut linq.signing_secret,
+                "config.channels_config.linq.signing_secret",
+            )?;
+        }
+        if let Some(email) = config_to_save.channels_config.email.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut email.password,
+                "config.channels_config.email.password",
+            )?;
+        }
+        if let Some(irc) = config_to_save.channels_config.irc.as_mut() {
+            encrypt_optional_secret(
+                &store,
+                &mut irc.server_password,
+                "config.channels_config.irc.server_password",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut irc.nickserv_password,
+                "config.channels_config.irc.nickserv_password",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut irc.sasl_password,
+                "config.channels_config.irc.sasl_password",
+            )?;
+        }
+        if let Some(lark) = config_to_save.channels_config.lark.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut lark.app_secret,
+                "config.channels_config.lark.app_secret",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut lark.encrypt_key,
+                "config.channels_config.lark.encrypt_key",
+            )?;
+            encrypt_optional_secret(
+                &store,
+                &mut lark.verification_token,
+                "config.channels_config.lark.verification_token",
+            )?;
+        }
+        if let Some(dingtalk) = config_to_save.channels_config.dingtalk.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut dingtalk.client_secret,
+                "config.channels_config.dingtalk.client_secret",
+            )?;
+        }
+        if let Some(qq) = config_to_save.channels_config.qq.as_mut() {
+            encrypt_required_secret(
+                &store,
+                &mut qq.app_secret,
+                "config.channels_config.qq.app_secret",
+            )?;
+        }
 
         for agent in config_to_save.agents.values_mut() {
             encrypt_optional_secret(&store, &mut agent.api_key, "config.agents.*.api_key")?;
@@ -3572,6 +3963,7 @@ impl Config {
                 parent_dir.display()
             )
         })?;
+        set_owner_only_dir_permissions(parent_dir).await?;
 
         let file_name = self
             .config_path
@@ -3601,6 +3993,7 @@ impl Config {
             .await
             .context("Failed to fsync temporary config file")?;
         drop(temp_file);
+        set_owner_only_file_permissions(&temp_path).await?;
 
         let had_existing_config = self.config_path.exists();
         if had_existing_config {
@@ -3623,6 +4016,7 @@ impl Config {
             }
             anyhow::bail!("Failed to atomically replace config file: {e}");
         }
+        set_owner_only_file_permissions(&self.config_path).await?;
 
         sync_directory(parent_dir).await?;
 
@@ -4103,6 +4497,116 @@ tool_dispatcher = "xml"
         config.browser.computer_use.api_key = Some("browser-credential".into());
         config.web_search.brave_api_key = Some("brave-credential".into());
         config.storage.provider.config.db_url = Some("postgres://user:pw@host/db".into());
+        config.gateway.paired_tokens = vec!["pair-token-1".into(), "pair-token-2".into()];
+        config.tunnel.cloudflare = Some(CloudflareTunnelConfig {
+            token: "cloudflare-token".into(),
+        });
+        config.tunnel.ngrok = Some(NgrokTunnelConfig {
+            auth_token: "ngrok-token".into(),
+            domain: None,
+        });
+        config.channels_config.telegram = Some(TelegramConfig {
+            bot_token: "telegram-token".into(),
+            allowed_users: vec!["*".into()],
+            stream_mode: StreamMode::Off,
+            draft_update_interval_ms: 1000,
+            interrupt_on_new_message: false,
+            mention_only: false,
+        });
+        config.channels_config.discord = Some(DiscordConfig {
+            bot_token: "discord-token".into(),
+            guild_id: None,
+            allowed_users: vec![],
+            listen_to_bots: false,
+            mention_only: false,
+        });
+        config.channels_config.slack = Some(SlackConfig {
+            bot_token: "slack-token".into(),
+            app_token: Some("slack-app-token".into()),
+            channel_id: None,
+            allowed_users: vec![],
+        });
+        config.channels_config.mattermost = Some(MattermostConfig {
+            url: "https://mattermost.example.com".into(),
+            bot_token: "mattermost-token".into(),
+            channel_id: None,
+            allowed_users: vec![],
+            thread_replies: None,
+            mention_only: None,
+        });
+        config.channels_config.webhook = Some(WebhookConfig {
+            port: 3030,
+            secret: Some("webhook-secret".into()),
+        });
+        config.channels_config.matrix = Some(MatrixConfig {
+            homeserver: "https://matrix.org".into(),
+            access_token: "matrix-token".into(),
+            user_id: None,
+            device_id: None,
+            room_id: "!room:matrix.org".into(),
+            allowed_users: vec!["*".into()],
+        });
+        config.channels_config.whatsapp = Some(WhatsAppConfig {
+            access_token: Some("whatsapp-token".into()),
+            phone_number_id: Some("12345".into()),
+            verify_token: Some("whatsapp-verify".into()),
+            app_secret: Some("whatsapp-secret".into()),
+            session_path: None,
+            pair_phone: None,
+            pair_code: Some("123-456".into()),
+            allowed_numbers: vec!["*".into()],
+        });
+        config.channels_config.linq = Some(LinqConfig {
+            api_token: "linq-token".into(),
+            from_phone: "+15550001111".into(),
+            signing_secret: Some("linq-signing-secret".into()),
+            allowed_senders: vec!["*".into()],
+        });
+        config.channels_config.email = Some(crate::channels::email_channel::EmailConfig {
+            imap_host: "imap.example.com".into(),
+            imap_port: 993,
+            imap_folder: "INBOX".into(),
+            smtp_host: "smtp.example.com".into(),
+            smtp_port: 465,
+            smtp_tls: true,
+            username: "bot@example.com".into(),
+            password: "email-password".into(),
+            from_address: "bot@example.com".into(),
+            idle_timeout_secs: 1740,
+            allowed_senders: vec!["*".into()],
+        });
+        config.channels_config.irc = Some(IrcConfig {
+            server: "irc.example.com".into(),
+            port: 6697,
+            nickname: "zeroclaw".into(),
+            username: Some("zeroclaw".into()),
+            channels: vec!["#ops".into()],
+            allowed_users: vec!["*".into()],
+            server_password: Some("irc-server-password".into()),
+            nickserv_password: Some("irc-nickserv-password".into()),
+            sasl_password: Some("irc-sasl-password".into()),
+            verify_tls: Some(true),
+        });
+        config.channels_config.lark = Some(LarkConfig {
+            app_id: "cli_123".into(),
+            app_secret: "lark-app-secret".into(),
+            encrypt_key: Some("lark-encrypt-key".into()),
+            verification_token: Some("lark-verification-token".into()),
+            allowed_users: vec!["*".into()],
+            use_feishu: false,
+            receive_mode: LarkReceiveMode::Websocket,
+            port: None,
+        });
+        config.channels_config.dingtalk = Some(DingTalkConfig {
+            client_id: "ding-app-key".into(),
+            client_secret: "ding-client-secret".into(),
+            allowed_users: vec!["*".into()],
+        });
+        config.channels_config.qq = Some(QQConfig {
+            app_id: "qq-app-id".into(),
+            app_secret: "qq-app-secret".into(),
+            allowed_users: vec!["*".into()],
+        });
 
         config.agents.insert(
             "worker".into(),
@@ -4123,49 +4627,223 @@ tool_dispatcher = "xml"
             .unwrap();
         let stored: Config = toml::from_str(&contents).unwrap();
         let store = crate::security::SecretStore::new(&dir, true);
+        let assert_encrypted = |encrypted: &str, expected_plaintext: &str| {
+            assert!(crate::security::SecretStore::is_encrypted(encrypted));
+            assert_eq!(store.decrypt(encrypted).unwrap(), expected_plaintext);
+        };
 
-        let root_encrypted = stored.api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(root_encrypted));
-        assert_eq!(store.decrypt(root_encrypted).unwrap(), "root-credential");
-
-        let composio_encrypted = stored.composio.api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(
-            composio_encrypted
-        ));
-        assert_eq!(
-            store.decrypt(composio_encrypted).unwrap(),
-            "composio-credential"
+        assert_encrypted(stored.api_key.as_deref().unwrap(), "root-credential");
+        assert_encrypted(
+            stored.composio.api_key.as_deref().unwrap(),
+            "composio-credential",
         );
-
-        let browser_encrypted = stored.browser.computer_use.api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(
-            browser_encrypted
-        ));
-        assert_eq!(
-            store.decrypt(browser_encrypted).unwrap(),
-            "browser-credential"
+        assert_encrypted(
+            stored.browser.computer_use.api_key.as_deref().unwrap(),
+            "browser-credential",
         );
-
-        let web_search_encrypted = stored.web_search.brave_api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(
-            web_search_encrypted
-        ));
-        assert_eq!(
-            store.decrypt(web_search_encrypted).unwrap(),
-            "brave-credential"
+        assert_encrypted(
+            stored.web_search.brave_api_key.as_deref().unwrap(),
+            "brave-credential",
+        );
+        assert_encrypted(
+            stored.storage.provider.config.db_url.as_deref().unwrap(),
+            "postgres://user:pw@host/db",
+        );
+        assert_encrypted(&stored.gateway.paired_tokens[0], "pair-token-1");
+        assert_encrypted(&stored.gateway.paired_tokens[1], "pair-token-2");
+        assert_encrypted(
+            &stored.tunnel.cloudflare.as_ref().unwrap().token,
+            "cloudflare-token",
+        );
+        assert_encrypted(
+            &stored.tunnel.ngrok.as_ref().unwrap().auth_token,
+            "ngrok-token",
+        );
+        assert_encrypted(
+            &stored.channels_config.telegram.as_ref().unwrap().bot_token,
+            "telegram-token",
+        );
+        assert_encrypted(
+            &stored.channels_config.discord.as_ref().unwrap().bot_token,
+            "discord-token",
+        );
+        assert_encrypted(
+            &stored.channels_config.slack.as_ref().unwrap().bot_token,
+            "slack-token",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .slack
+                .as_ref()
+                .unwrap()
+                .app_token
+                .as_deref()
+                .unwrap(),
+            "slack-app-token",
+        );
+        assert_encrypted(
+            &stored
+                .channels_config
+                .mattermost
+                .as_ref()
+                .unwrap()
+                .bot_token,
+            "mattermost-token",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .webhook
+                .as_ref()
+                .unwrap()
+                .secret
+                .as_deref()
+                .unwrap(),
+            "webhook-secret",
+        );
+        assert_encrypted(
+            &stored.channels_config.matrix.as_ref().unwrap().access_token,
+            "matrix-token",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .whatsapp
+                .as_ref()
+                .unwrap()
+                .access_token
+                .as_deref()
+                .unwrap(),
+            "whatsapp-token",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .whatsapp
+                .as_ref()
+                .unwrap()
+                .verify_token
+                .as_deref()
+                .unwrap(),
+            "whatsapp-verify",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .whatsapp
+                .as_ref()
+                .unwrap()
+                .app_secret
+                .as_deref()
+                .unwrap(),
+            "whatsapp-secret",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .whatsapp
+                .as_ref()
+                .unwrap()
+                .pair_code
+                .as_deref()
+                .unwrap(),
+            "123-456",
+        );
+        assert_encrypted(
+            &stored.channels_config.linq.as_ref().unwrap().api_token,
+            "linq-token",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .linq
+                .as_ref()
+                .unwrap()
+                .signing_secret
+                .as_deref()
+                .unwrap(),
+            "linq-signing-secret",
+        );
+        assert_encrypted(
+            &stored.channels_config.email.as_ref().unwrap().password,
+            "email-password",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .irc
+                .as_ref()
+                .unwrap()
+                .server_password
+                .as_deref()
+                .unwrap(),
+            "irc-server-password",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .irc
+                .as_ref()
+                .unwrap()
+                .nickserv_password
+                .as_deref()
+                .unwrap(),
+            "irc-nickserv-password",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .irc
+                .as_ref()
+                .unwrap()
+                .sasl_password
+                .as_deref()
+                .unwrap(),
+            "irc-sasl-password",
+        );
+        assert_encrypted(
+            &stored.channels_config.lark.as_ref().unwrap().app_secret,
+            "lark-app-secret",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .lark
+                .as_ref()
+                .unwrap()
+                .encrypt_key
+                .as_deref()
+                .unwrap(),
+            "lark-encrypt-key",
+        );
+        assert_encrypted(
+            stored
+                .channels_config
+                .lark
+                .as_ref()
+                .unwrap()
+                .verification_token
+                .as_deref()
+                .unwrap(),
+            "lark-verification-token",
+        );
+        assert_encrypted(
+            &stored
+                .channels_config
+                .dingtalk
+                .as_ref()
+                .unwrap()
+                .client_secret,
+            "ding-client-secret",
+        );
+        assert_encrypted(
+            &stored.channels_config.qq.as_ref().unwrap().app_secret,
+            "qq-app-secret",
         );
 
         let worker = stored.agents.get("worker").unwrap();
-        let worker_encrypted = worker.api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(worker_encrypted));
-        assert_eq!(store.decrypt(worker_encrypted).unwrap(), "agent-credential");
-
-        let storage_db_url = stored.storage.provider.config.db_url.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(storage_db_url));
-        assert_eq!(
-            store.decrypt(storage_db_url).unwrap(),
-            "postgres://user:pw@host/db"
-        );
+        assert_encrypted(worker.api_key.as_deref().unwrap(), "agent-credential");
 
         let _ = fs::remove_dir_all(&dir).await;
     }
@@ -5882,22 +6560,35 @@ default_model = "legacy-model"
     async fn new_config_file_has_restricted_permissions() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("config.toml");
+        let config_dir = config_path.parent().unwrap().to_path_buf();
 
-        // Create a config and save it
         let mut config = Config::default();
         config.config_path = config_path.clone();
+        config.workspace_dir = tmp.path().join("workspace");
         config.save().await.unwrap();
 
-        // Apply the same permission logic as load_or_init
-        fs::set_permissions(&config_path, Permissions::from_mode(0o600))
+        // Intentionally loosen permissions, then ensure save() hardens them.
+        fs::set_permissions(&config_path, Permissions::from_mode(0o644))
             .await
             .expect("Failed to set permissions");
+        fs::set_permissions(&config_dir, Permissions::from_mode(0o755))
+            .await
+            .expect("Failed to set directory permissions");
+
+        config.save().await.unwrap();
 
         let meta = fs::metadata(&config_path).await.unwrap();
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(
             mode, 0o600,
             "New config file should be owner-only (0600), got {mode:o}"
+        );
+
+        let dir_meta = fs::metadata(&config_dir).await.unwrap();
+        let dir_mode = dir_meta.permissions().mode() & 0o777;
+        assert_eq!(
+            dir_mode, 0o700,
+            "Config directory should be owner-only (0700), got {dir_mode:o}"
         );
     }
 
